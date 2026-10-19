@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<!-- 리딩런 단일 실행 파일. 경과 시간 누락과 완주·초기화 상태 충돌을 방지한다. -->
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>2026 연가 책잔치 리딩런</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; padding: 20px 12px; background: #2f7bf2; color: white; font-family: "Malgun Gothic", sans-serif; text-align: center; }
+        .wrapper { max-width: 900px; margin: auto; }
+        h1 { font-size: 55px; margin: 8px 0 0; text-shadow: 3px 4px #1954b4; }
+        .english { font-size: 25px; font-weight: 900; letter-spacing: 3px; }
+        .subtitle { display: inline-block; margin: 12px; padding: 10px 20px; border-radius: 30px; background: #245fc1; color: #ffeb3b; font-weight: bold; }
+        .dashboard { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; align-items: center; margin: 20px 0; }
+        #notice { background: white; color: #e85c43; padding: 12px 18px; border-radius: 12px; font-weight: bold; }
+        #timer { font-size: 30px; font-weight: 900; }
+        .track { position: relative; height: 145px; border-radius: 15px; background: #ff8055; border-top: 7px solid #4ade80; border-bottom: 7px solid #1a52b8; overflow: hidden; }
+        .track:before { content: ""; position: absolute; top: 50%; left: 0; right: 0; border-top: 3px dashed #ffffff99; }
+        #runners { position: absolute; top: 40px; left: 0%; font-size: 42px; transition: left .4s ease; margin-left: 10px; white-space: nowrap; }
+        /* 이모지는 왼쪽을 보므로 좌우 반전해 결승선(오른쪽) 방향으로 달리게 한다. */
+        .runner-icon { display: inline-block; transform: scaleX(-1); }
+        .running #runners { animation: bounce .4s infinite alternate; }
+        @keyframes bounce { to { transform: translateY(-12px); } }
+        .settings { margin: 18px 0; padding: 14px; background: #ffffff22; border-radius: 12px; }
+        select { padding: 8px; font-size: 18px; border-radius: 8px; }
+        button { border: none; border-radius: 30px; padding: 14px 22px; margin: 5px; font-size: 19px; font-weight: 900; cursor: pointer; }
+        button:disabled { opacity: .65; cursor: default; }
+        #start { background: #4ade80; color: #12492c; font-size: 24px; }
+        #next { background: #ffeb3b; color: black; }
+        #reset { background: white; color: #333; }
+        .info-panel { display: flex; justify-content: space-around; background: #ffffff22; border-radius: 12px; padding: 15px; margin-top: 15px; font-size: 18px; }
+        .info-box { flex: 1; padding: 5px; }
+        .info-box span { display: block; font-size: 24px; font-weight: bold; color: #ffeb3b; margin-top: 5px; }
+    </style>
+</head>
+<body>
+    <div class="wrapper">
+        <div class="english">2026 YEONGA BOOK FESTIVAL</div>
+        <h1>리딩런 (Reading Run)</h1>
+        <div class="subtitle">📖 독서 목표를 향해 함께 달리는 레이스!</div>
+
+        <!-- 대시보드 (공지사항 및 타이머) -->
+        <div class="dashboard">
+            <div id="notice">📢 현재 목표: 책 1권 읽고 전진하기!</div>
+            <div id="timer">⏱️ 00:00</div>
+        </div>
+
+        <!-- 러닝 트랙 -->
+        <div class="track">
+            <div id="runners"><span class="runner-icon">🏃‍♂️💨</span></div>
+        </div>
+
+        <!-- 설정 및 컨트롤러 -->
+        <div class="settings">
+            <label for="step-select">🏃 이동 거리 선택: </label>
+            <select id="step-select">
+                <option value="10">10% (가볍게 한 걸음)</option>
+                <option value="25">25% (힘찬 전력질주)</option>
+                <option value="50">50% (대단한 몰입!)</option>
+            </select>
+            <br><br>
+            <button id="start" aria-pressed="false">▶️ 레이스 시작</button>
+            <button id="next">👟 앞으로 전진</button>
+            <button id="reset">🔄 처음으로</button>
+        </div>
+
+        <!-- 현재 현황판 -->
+        <div class="info-panel">
+            <div class="info-box">전체 진행률<span id="progress-percent">0%</span></div>
+        </div>
+    </div>
+
+    <script>
+        const runners = document.getElementById('runners');
+        const startBtn = document.getElementById('start');
+        const nextBtn = document.getElementById('next');
+        const resetBtn = document.getElementById('reset');
+        const stepSelect = document.getElementById('step-select');
+        const progressPercentText = document.getElementById('progress-percent');
+        const timerText = document.getElementById('timer');
+        const track = document.querySelector('.track');
+
+        let currentPercent = 0; // % 단위로 직관적 관리
+        let isRunning = false;
+        let timerInterval = null;
+        let elapsedMilliseconds = 0;
+        let startedAt = 0;
+        let finishTimeout = null;
+
+        // 콜백 횟수 대신 실제 경과 시간을 사용하고, 일시정지 전의 밀리초를 보존한다.
+        function updateTimer() {
+            const elapsed = elapsedMilliseconds + (isRunning ? performance.now() - startedAt : 0);
+            const seconds = Math.floor(elapsed / 1000);
+            const mins = String(Math.floor(seconds / 60)).padStart(2, '0');
+            const secs = String(seconds % 60).padStart(2, '0');
+            timerText.textContent = `⏱️ ${mins}:${secs}`;
+        }
+
+        function stopTimer() {
+            if (isRunning) {
+                elapsedMilliseconds += performance.now() - startedAt;
+            }
+            clearInterval(timerInterval);
+            timerInterval = null;
+            isRunning = false;
+            track.classList.remove('running');
+            updateTimer();
+        }
+
+        function updateStartButton(text) {
+            startBtn.textContent = text;
+            startBtn.style.background = isRunning ? '#f43f5e' : '#4ade80';
+            startBtn.style.color = isRunning ? 'white' : '#12492c';
+            startBtn.setAttribute('aria-pressed', String(isRunning));
+        }
+
+        // 이모지의 실제 너비와 양쪽 여백을 제외한 거리 안에서만 이동한다.
+        function updateRunnerPosition() {
+            const availableWidth = Math.max(0, track.clientWidth - runners.offsetWidth - 20);
+            runners.style.left = `${availableWidth * currentPercent / 100}px`;
+        }
+
+        window.addEventListener('resize', updateRunnerPosition);
+
+        // 레이스 시작/일시정지 버튼 이벤트
+        startBtn.addEventListener('click', () => {
+            if (currentPercent >= 100) return;
+
+            if (!isRunning) {
+                startedAt = performance.now();
+                isRunning = true;
+                track.classList.add('running');
+                updateStartButton('⏸️ 레이스 일시정지');
+                timerInterval = setInterval(updateTimer, 100);
+            } else {
+                stopTimer();
+                updateStartButton('▶️ 레이스 재개');
+            }
+        });
+
+        // 수동 전진은 시작 전·일시정지 중에도 허용하고, 완주 후에만 차단한다.
+        nextBtn.addEventListener('click', () => {
+            if (currentPercent >= 100) return;
+
+            const step = parseInt(stepSelect.value, 10);
+            currentPercent += step;
+
+            if (currentPercent >= 100) {
+                currentPercent = 100;
+                updateRunnerPosition();
+                progressPercentText.textContent = '100%';
+                
+                // 완주 상태는 처음으로 버튼으로만 해제한다.
+                stopTimer();
+                startBtn.disabled = true;
+                nextBtn.disabled = true;
+                updateStartButton('🏁 레이스 완료');
+                
+                finishTimeout = setTimeout(() => {
+                    finishTimeout = null;
+                    alert('🎉 축하합니다! 목표 독서량을 모두 달성하여 결승선에 골인했습니다! 🏁');
+                }, 450); // 이동 애니메이션(0.4초)이 끝난 뒤 알림을 띄운다.
+                return;
+            }
+
+            // 실시간 % 이동 적용
+            updateRunnerPosition();
+            progressPercentText.textContent = currentPercent + '%';
+        });
+
+        // 처음으로 버튼 이벤트
+        resetBtn.addEventListener('click', () => {
+            clearTimeout(finishTimeout);
+            finishTimeout = null;
+            stopTimer();
+            elapsedMilliseconds = 0;
+            currentPercent = 0;
+            
+            runners.style.left = '0%';
+            updateTimer();
+            progressPercentText.textContent = '0%';
+            
+            startBtn.disabled = false;
+            nextBtn.disabled = false;
+            updateStartButton('▶️ 레이스 시작');
+        });
+    </script>
+</body>
+</html>
