@@ -44,15 +44,37 @@ button.small { font-size: 16px; padding: 9px 16px; margin: 0; background: white;
 #pause { background: #ffffffcc; color: #333; }
 #paraInfo { font-size: 18px; font-weight: bold; margin: 10px 0; }
 #text { background: white; color: #555; border-radius: 16px; padding: 26px 22px; font-size: clamp(26px, 3.6vw, 40px); line-height: 1.9; min-height: 180px; white-space: pre-wrap; overflow-wrap: anywhere; text-align: left; }
-#text .done { background: #fff200; color: black; font-weight: bold; }
+/* 굵게 하면 줄이 다시 나뉘어 글자 크기 맞춤이 틀어지므로 색만 바꾼다 */
+#text .done { background: #fff200; color: black; }
 #text .next { color: #2f7bf2; text-decoration: underline; text-decoration-thickness: 3px; }
 #status { margin: 14px 0; font-size: 18px; color: #fff6ad; font-weight: bold; min-height: 26px; }
 #result { background: white; color: #2464c8; border-radius: 16px; padding: 26px; margin: 18px 0; font-size: 24px; font-weight: bold; line-height: 1.7; }
 footer { margin-top: 20px; font-weight: bold; }
+#browserWarn { background: #ffeb3b; color: #222; border-radius: 10px; padding: 8px 12px; margin-bottom: 10px; font-weight: bold; font-size: 15px; }
+
+/* 게임 중 — 프로젝터 한 화면에 연 전체가 보이도록 제목·설명을 숨기고 위아래를 줄인다. 글자 크기는 fitText() 가 맞춘다 */
+body.playing { padding: 8px 12px; }
+body.playing .wrapper { max-width: 1400px; display: flex; flex-direction: column; }
+body.playing h1, body.playing .english, body.playing .subtitle, body.playing footer { display: none; }
+body.playing #browserWarn { order: 0; margin-bottom: 6px; }
+body.playing .dashboard { order: 1; margin: 0 0 6px; }
+body.playing #notice { padding: 6px 12px; font-size: 17px; }
+body.playing #timer { font-size: 24px; }
+body.playing .track { order: 2; height: 62px; border-top-width: 5px; border-bottom-width: 5px; }
+body.playing .track:after { top: 6px; font-size: 30px; }
+body.playing #runners { top: 6px; font-size: 32px; }
+body.playing #micMeter { order: 3; margin: 6px 0 0; font-size: 14px; }
+body.playing #reading { order: 4; }
+body.playing #paraInfo { margin: 6px 0; font-size: 17px; }
+body.playing #text { padding: 14px 20px; line-height: 1.55; min-height: 0; column-gap: 48px; column-rule: 2px dashed #d0d7e2; }
+body.playing #status { margin: 6px 0; font-size: 16px; min-height: 44px; }
+body.playing .controls { order: 5; margin: 0; }
+body.playing button { padding: 9px 16px; margin: 3px; font-size: 16px; }
 </style>
 </head>
 <body>
 <div class="wrapper">
+	<div id="browserWarn" hidden>⚠️ 음성인식은 Chrome 에서 가장 잘 동작해요. 읽어도 자동으로 안 넘어가면 이 링크를 Chrome 으로 열어 주세요.</div>
 	<h1>리딩런</h1>
 	<div class="english">READING RUN</div>
 	<div class="subtitle">우리 반 릴레이 낭독 챌린지 🏃</div>
@@ -683,6 +705,7 @@ function startParagraph() {
 	$("paraInfo").textContent = "📖 " + (turn.title || "읽을 글") + " · " + turn.stanza + "연 / " + turn.stanzaCount + "연" +
 		"   (전체 " + (state.index + 1) + " / " + state.paragraphs.length + ")";
 	renderParagraph();
+	fitText();
 	renderRunner();
 	state.transition = false;
 	state.hintShown = false;
@@ -713,6 +736,7 @@ function completeParagraph(manual) {
 
 function finishGame(allDone) {
 	state.playing = false;
+	document.body.classList.remove("playing");
 	stopRecognition();
 	clearInterval(state.timer);
 	$("track").classList.remove("running");
@@ -768,9 +792,65 @@ async function startGame() {
 	// 마이크 준비 중에 새 게임을 눌렀으면 시작하지 않는다
 	if (!state.playing) return;
 	$("reading").hidden = false;
+	document.body.classList.add("playing");
 	startTimer();
 	startParagraph();
 }
+
+// 연 전체가 한 화면에 보이도록 글자 크기를 맞춘다 — 페이지가 화면 높이 안에 들어가는 가장 큰 크기를 찾는다
+const FIT_MAX = 56;
+const FIT_MIN = 18;
+function fitText() {
+	const box = $("text");
+	box.style.columnCount = "";
+	if (!document.body.classList.contains("playing") || $("reading").hidden) {
+		box.style.fontSize = "";
+		return;
+	}
+	const largestFitting = () => {
+		let lo = FIT_MIN, hi = FIT_MAX, best = 0;
+		while (lo <= hi) {
+			const mid = Math.floor((lo + hi) / 2);
+			box.style.fontSize = mid + "px";
+			if (document.documentElement.scrollHeight <= window.innerHeight) {
+				best = mid;
+				lo = mid + 1;
+			} else {
+				hi = mid - 1;
+			}
+		}
+		return best;   // 0 = 가장 작은 크기로도 안 들어감
+	};
+	const oneColumn = largestFitting();
+	// 8줄 이상 긴 연이 한 단으로는 작게(28px 미만) 나오면 두 단으로 나눠 더 크게 보여 준다
+	if (oneColumn < 28 && currentParagraph().split("\n").length >= 8) {
+		box.style.columnCount = "2";
+		const twoColumns = largestFitting();
+		if (twoColumns > oneColumn) {
+			settleFont(twoColumns);
+			return;
+		}
+		box.style.columnCount = "";
+	}
+	// 그래도 안 들어가는 연은 가장 작은 크기로 두고 스크롤을 허용한다
+	settleFont(oneColumn || FIT_MIN);
+}
+
+// 크기를 정한 뒤 배치를 새로 계산시키고(두 단은 크기를 줄여 올 때 단 균형을 다시 안 맞추는 경우가 있다 — 10-19 실측),
+// 그래도 넘치면 1px 씩 줄인다
+function settleFont(size) {
+	const box = $("text");
+	const columns = box.style.columnCount;
+	box.style.fontSize = size + "px";
+	box.style.columnCount = "";
+	void box.offsetHeight;
+	box.style.columnCount = columns;
+	while (size > FIT_MIN && document.documentElement.scrollHeight > window.innerHeight) {
+		size--;
+		box.style.fontSize = size + "px";
+	}
+}
+window.addEventListener("resize", () => { if (state.playing) fitText(); });
 
 function startTimer() {
 	clearInterval(state.timer);
@@ -802,6 +882,7 @@ function togglePause() {
 
 function resetGame() {
 	state.playing = false;
+	document.body.classList.remove("playing");
 	state.turn++;
 	stopRecognition();
 	clearInterval(state.timer);
@@ -872,6 +953,12 @@ $("fileInput").addEventListener("change", async () => {
 $("passages").value = loadText() || DEFAULT_TEXT;
 refreshPoemSelect();
 renderTimer();
+// Chrome 이 아니면(Edge·웨일·오페라·삼성 인터넷 등) 위에 안내 띠 — 음성인식 실검증은 Chrome 만 했다
+(() => {
+	const ua = navigator.userAgent;
+	const isChrome = /Chrome\//.test(ua) && !/Edg\/|Whale\/|OPR\/|SamsungBrowser\/|YaBrowser\/|Firefox\//.test(ua) && !navigator.brave;
+	if (!isChrome || !getRecognitionClass()) $("browserWarn").hidden = false;
+})();
 // 화면을 처음 누르면 소리 막대를 깨운다
 document.addEventListener("pointerdown", resumeMeter);
 document.addEventListener("keydown", resumeMeter);
