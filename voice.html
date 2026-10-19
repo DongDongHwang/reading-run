@@ -912,7 +912,6 @@ function completeParagraph(manual) {
 	state.index++;
 	state.student = state.student % state.students + 1;
 	if (state.index >= state.paragraphs.length) {
-		renderRunner();
 		finishGame(true);
 		return;
 	}
@@ -922,6 +921,8 @@ function completeParagraph(manual) {
 function finishGame(allDone) {
 	state.playing = false;
 	document.body.classList.remove("playing");
+	// 게임 화면(넓은 트랙)에서 잡은 러너 자리를 결과 화면 트랙 폭으로 다시 잡는다 — 안 하면 완주 때 러너가 트랙 밖으로 나가 안 보인다 (10-20 실측)
+	renderRunner();
 	stopRecognition();
 	clearInterval(state.timer);
 	$("track").classList.remove("running");
