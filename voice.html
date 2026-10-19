@@ -53,9 +53,11 @@ button.small { font-size: 16px; padding: 9px 16px; margin: 0; background: white;
 #readHead { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 16px; margin: 10px 0; }
 #readHead #paraInfo { margin: 0; }
 #legend { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
-#legend .chip { background: white; color: #333; border-radius: 20px; padding: 3px 10px; font-size: 14px; font-weight: bold; white-space: nowrap; }
+/* 칩 아래 여백을 위보다 넉넉히 — 견본 글자의 밑줄(특히 물결)이 흰 칩 밖으로 삐져나오지 않게 (10-20 캡처) */
+#legend .chip { background: white; color: #333; border-radius: 20px; padding: 2px 10px 6px; font-size: 14px; font-weight: bold; white-space: nowrap; }
 #legend .chip span { padding: 0 2px; margin-right: 4px; font-size: 16px; }
-#legend .miss { text-underline-offset: 4px; text-decoration-thickness: 2px; }
+#legend .next { text-decoration-thickness: 2px; }
+#legend .miss { text-underline-offset: 2px; text-decoration-thickness: 2px; }
 #status { margin: 14px 0; font-size: 18px; color: #fff6ad; font-weight: bold; min-height: 26px; }
 #result { background: white; color: #2464c8; border-radius: 16px; padding: 26px; margin: 18px 0; font-size: 24px; font-weight: bold; line-height: 1.7; }
 footer { margin-top: 20px; font-weight: bold; }
