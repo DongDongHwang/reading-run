@@ -23,6 +23,10 @@ h1 { font-size: clamp(40px, 7vw, 60px); margin: 0; text-shadow: 3px 4px #1954b4;
 .runner-icon { display: inline-block; transform: scaleX(-1); }
 .running #runners { animation: bounce .4s infinite alternate; }
 @keyframes bounce { to { transform: translateY(-10px); } }
+#micMeter { display: flex; align-items: center; gap: 10px; margin: 10px 0 0; font-weight: bold; font-size: 16px; }
+#micMeter .meter { flex: 1; max-width: 360px; height: 14px; background: #ffffff33; border-radius: 7px; overflow: hidden; }
+#micLevel { height: 100%; width: 0; background: #4ade80; transition: width .08s linear; }
+#micHint { font-size: 14px; color: #fff6ad; }
 .panel { margin: 16px 0; padding: 16px; background: #ffffff22; border-radius: 14px; text-align: left; }
 .row { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-bottom: 12px; font-size: 17px; font-weight: bold; }
 select { padding: 6px 8px; font-size: 17px; border-radius: 8px; border: none; }
@@ -59,6 +63,13 @@ footer { margin-top: 20px; font-weight: bold; }
 	</div>
 
 	<div class="track" id="track"><div id="runners"><span class="runner-icon">🏃‍♂️💨</span></div></div>
+
+	<!-- 마이크 소리 크기 — 말할 때 막대가 움직이면 마이크는 정상이다 -->
+	<div id="micMeter" hidden>
+		<span>🎤 마이크</span>
+		<div class="meter"><div id="micLevel"></div></div>
+		<span id="micHint"></span>
+	</div>
 
 	<!-- 시작 전 설정 -->
 	<div class="panel" id="settings">
@@ -161,7 +172,9 @@ const state = {
 	playing: false, paused: false, totalSeconds: 900, threshold: 0.8,
 	totalChars: 0, autoCount: 0, manualCount: 0,
 	confirmed: "", interim: "", matched: 0, hits: 0, soundPos: 0, settleTimer: null,
-	recognition: null, generation: 0, micBlocked: false, micTrack: null, micRequest: null
+	recognition: null, generation: 0, micBlocked: false, micTrack: null, micRequest: null,
+	usesTrack: false, reconnectTimer: null, netDown: false,
+	resultsLen: 0, transition: false, lastResultAt: 0, hintShown: false
 };
 
 function normalize(text) {
@@ -448,7 +461,10 @@ function finishReading() {
 	renderParagraph();
 	$("notice").textContent = "👏 잘했어요! 다음 학생 준비!";
 	setStatus("✅ 잘 읽었어요! 다음 연으로 넘어가요");
-	stopRecognition();
+	// 다음 학생용 인식을 지금 바로 새로 켜 둔다 — 연이 바뀐 뒤에 켜면 켜지는 사이에 첫 단어가 사라진다.
+	// (같은 인식을 계속 쓰면 Chrome 이 앞 결과를 확정하지 않아 다음 말이 사라지므로 반드시 새로 켠다 — 10-19 실측)
+	state.transition = true;
+	startRecognition();
 	setTimeout(() => {
 		// 그사이 수동 전진·다시 읽기·새 게임을 눌렀으면 넘기지 않는다
 		if (state.playing && state.turn === turn) completeParagraph(false);
@@ -480,6 +496,8 @@ function startRecognition() {
 	const generation = state.generation;
 	const recognition = new Recognition();
 	state.recognition = recognition;
+	// 새 인식이 아직 아무것도 못 들었음을 표시 (startParagraph 가 그대로 쓸지 판단)
+	state.resultsLen = 0;
 	recognition.lang = "ko-KR";
 	recognition.continuous = true;
 	recognition.interimResults = true;
@@ -487,10 +505,18 @@ function startRecognition() {
 	const live = () => state.recognition === recognition && state.generation === generation && state.playing;
 
 	recognition.onstart = () => {
-		if (live()) setStatus("🎤 듣고 있어요! 또박또박 읽어 주세요.");
+		if (live() && !state.netDown) setStatus("🎤 듣고 있어요! 또박또박 읽어 주세요.");
 	};
 	recognition.onresult = event => {
 		if (!live()) return;
+		state.resultsLen = event.results.length;
+		state.lastResultAt = Date.now();
+		if (state.netDown) {
+			state.netDown = false;
+			setStatus("🎤 인터넷이 다시 연결됐어요! 이어서 읽어 주세요.");
+		}
+		// 다음 학생으로 넘어가는 동안 들린 말은 버린다
+		if (state.transition) return;
 		let interim = "";
 		for (let i = event.resultIndex; i < event.results.length; i++) {
 			const transcript = event.results[i][0].transcript || "";
@@ -509,7 +535,12 @@ function startRecognition() {
 		} else if (event.error === "no-speech") {
 			setStatus("🎤 목소리가 아직 안 들려요. 조금 더 크게 읽어 주세요.");
 		} else if (event.error === "audio-capture") {
-			setStatus("⚠️ 마이크를 찾을 수 없어요. 마이크 연결을 확인해 주세요.");
+			if (state.usesTrack) handleMicLost();
+			else setStatus("⚠️ 마이크를 찾을 수 없어요. 마이크 연결을 확인해 주세요.");
+		} else if (event.error === "network") {
+			// 음성인식은 Google 서버를 쓰므로 인터넷이 끊기면 멈춘다 — 연결될 때까지 천천히 다시 시도한다
+			state.netDown = true;
+			setStatus("⚠️ 인터넷 연결이 끊겼어요 — 연결되면 자동으로 이어서 들어요. (「다음 연」 버튼은 계속 쓸 수 있어요)");
 		} else if (event.error !== "aborted") {
 			setStatus("⚠️ 음성인식 오류(" + event.error + ") — 자동으로 다시 켤게요.");
 		}
@@ -517,9 +548,11 @@ function startRecognition() {
 	recognition.onend = () => {
 		// Chrome은 조용하거나 오래 들으면 인식을 스스로 끊는다 → 읽던 내용은 두고 다시 켠다
 		if (!live() || state.micBlocked) return;
+		// 마이크가 빠져서 끝난 경우엔 다시 연결하는 쪽(handleMicLost)이 인식을 켠다
+		if (state.usesTrack && !(state.micTrack && state.micTrack.readyState === "live")) return;
 		state.interim = "";
-		// 다시 켜는 사이에 읽은 말은 들리지 않으므로 최대한 빨리 켠다
-		setTimeout(() => { if (live()) startRecognition(); }, 100);
+		// 다시 켜는 사이에 읽은 말은 들리지 않으므로 최대한 빨리 켠다 (인터넷이 끊겼으면 3초 간격으로)
+		setTimeout(() => { if (live()) startRecognition(); }, state.netDown ? 3000 : 100);
 	};
 	try {
 		// 게임 시작 때 연 마이크를 넘겨 준다 → 연이 바뀌거나 인식이 다시 켜져도 마이크 권한·알림이 다시 뜨지 않는다
@@ -540,12 +573,102 @@ async function ensureMicTrack() {
 	if (!state.micRequest) {
 		state.micRequest = navigator.mediaDevices
 			.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
-			.then(stream => { state.micTrack = stream.getAudioTracks()[0] || null; })
+			.then(stream => {
+				state.micTrack = stream.getAudioTracks()[0] || null;
+				if (state.micTrack) {
+					state.usesTrack = true;
+					// USB 마이크가 빠지는 등 마이크가 끊기면 다시 연결한다
+					state.micTrack.addEventListener("ended", handleMicLost);
+					attachMeter(state.micTrack);
+				}
+			})
 			.catch(() => { state.micTrack = null; })
 			.finally(() => { state.micRequest = null; });
 	}
 	await state.micRequest;
 	return state.micTrack;
+}
+
+// 마이크 소리 크기 막대 — 같은 마이크 트랙을 들여다보기만 한다(인식에는 영향 없음)
+const meter = { ctx: null, analyser: null, buf: null, track: null, running: false, loudMs: 0, last: 0 };
+
+function attachMeter(track) {
+	if (!track || meter.track === track) return;
+	try {
+		meter.ctx = meter.ctx || new (window.AudioContext || window.webkitAudioContext)();
+		const source = meter.ctx.createMediaStreamSource(new MediaStream([track]));
+		meter.analyser = meter.ctx.createAnalyser();
+		meter.analyser.fftSize = 1024;
+		source.connect(meter.analyser);
+		meter.buf = new Float32Array(meter.analyser.fftSize);
+		meter.track = track;
+		$("micMeter").hidden = false;
+		// 브라우저는 화면을 한 번 누르기 전엔 소리 분석을 멈춰 둔다
+		$("micHint").textContent = meter.ctx.state === "running" ? "" : "화면을 한 번 누르면 막대가 움직여요";
+		if (!meter.running) {
+			meter.running = true;
+			requestAnimationFrame(drawMeter);
+		}
+	} catch (e) { /* 막대 없이도 게임은 돈다 */ }
+}
+
+function drawMeter(now) {
+	if (meter.analyser && meter.ctx.state === "running" && meter.track && meter.track.readyState === "live") {
+		meter.analyser.getFloatTimeDomainData(meter.buf);
+		let sum = 0;
+		for (const v of meter.buf) sum += v * v;
+		const rms = Math.sqrt(sum / meter.buf.length);
+		// -60dB(조용함) ~ -10dB(큰 소리)를 0~100% 로
+		const level = Math.max(0, Math.min(1, (20 * Math.log10(rms + 1e-8) + 60) / 50));
+		$("micLevel").style.width = Math.round(level * 100) + "%";
+		$("micLevel").style.background = level > 0.95 ? "#f43f5e" : level > 0.35 ? "#4ade80" : "#ffffff88";
+		checkHeardButNotRecognized(level, now);
+	}
+	requestAnimationFrame(drawMeter);
+}
+
+// 소리는 계속 들어오는데 음성인식 결과가 5초 넘게 없으면 — 인터넷·인식 서버 문제일 가능성이 크다
+function checkHeardButNotRecognized(level, now) {
+	const dt = Math.min(200, now - (meter.last || now));
+	meter.last = now;
+	if (!state.playing || state.paused || state.transition || Date.now() - state.lastResultAt < 1500) {
+		meter.loudMs = 0;
+		return;
+	}
+	if (level > 0.35) meter.loudMs += dt;
+	if (meter.loudMs > 5000 && !state.hintShown) {
+		state.hintShown = true;
+		setStatus("🎤 소리는 들리는데 글자로 안 바뀌어요 — 인터넷 연결을 확인하거나 「다음 연」으로 넘겨 주세요.");
+	}
+}
+
+function resumeMeter() {
+	if (meter.ctx && meter.ctx.state !== "running") {
+		meter.ctx.resume().then(() => { $("micHint").textContent = ""; }).catch(() => {});
+	}
+}
+
+// 마이크가 끊겼을 때 — 1초 뒤 다시 연결해 보고, 안 되면 버튼으로 안내한다
+function handleMicLost() {
+	if (state.micTrack && state.micTrack.readyState === "live") return;
+	state.micTrack = null;
+	$("micLevel").style.width = "0%";
+	if (state.playing) setStatus("⚠️ 마이크 연결이 끊겼어요 — 다시 연결하는 중이에요…");
+	clearTimeout(state.reconnectTimer);
+	state.reconnectTimer = setTimeout(reconnectMic, 1000);
+}
+
+async function reconnectMic() {
+	const track = await ensureMicTrack();
+	if (track) {
+		if (state.playing && !state.paused) {
+			setStatus("🎤 마이크가 다시 연결됐어요! 이어서 읽어 주세요.");
+			startRecognition();
+		}
+	} else if (state.playing) {
+		$("mic").hidden = false;
+		setStatus("⚠️ 마이크를 찾지 못했어요. 마이크를 연결한 뒤 「🎤 마이크 다시 켜기」를 눌러 주세요.");
+	}
 }
 
 function startParagraph() {
@@ -561,13 +684,21 @@ function startParagraph() {
 		"   (전체 " + (state.index + 1) + " / " + state.paragraphs.length + ")";
 	renderParagraph();
 	renderRunner();
-	setStatus("🎤 마이크를 켜는 중이에요…");
-	startRecognition();
+	state.transition = false;
+	state.hintShown = false;
+	meter.loudMs = 0;
+	if (state.recognition && !state.paused && state.resultsLen === 0) {
+		// 미리 켜 둔 인식이 아직 아무 말도 안 들었으면 그대로 쓴다 (켜지는 시간 없이 첫 단어부터 듣는다)
+		if (!state.netDown) setStatus("🎤 듣고 있어요! 또박또박 읽어 주세요.");
+	} else {
+		// 이미 무언가 들은 인식(이전 연·잡음)이면 새로 켠다
+		setStatus("🎤 마이크를 켜는 중이에요…");
+		startRecognition();
+	}
 }
 
 function completeParagraph(manual) {
 	if (!state.playing) return;
-	stopRecognition();
 	state.totalChars += normalize(currentParagraph()).length;
 	if (manual) state.manualCount++; else state.autoCount++;
 	state.index++;
@@ -616,7 +747,7 @@ async function startGame() {
 		secondsLeft: parseInt($("minutes").value, 10) * 60,
 		threshold: parseFloat($("threshold").value),
 		totalSeconds: parseInt($("minutes").value, 10) * 60,
-		playing: true, paused: false, micBlocked: false,
+		playing: true, paused: false, micBlocked: false, netDown: false, transition: false,
 		totalChars: 0, autoCount: 0, manualCount: 0
 	});
 	$("settings").hidden = true;
@@ -741,6 +872,25 @@ $("fileInput").addEventListener("change", async () => {
 $("passages").value = loadText() || DEFAULT_TEXT;
 refreshPoemSelect();
 renderTimer();
+// 화면을 처음 누르면 소리 막대를 깨운다
+document.addEventListener("pointerdown", resumeMeter);
+document.addEventListener("keydown", resumeMeter);
+// 마이크를 새로 꽂으면 다시 연결한다
+if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+	navigator.mediaDevices.addEventListener("devicechange", () => {
+		if (state.usesTrack && !(state.micTrack && state.micTrack.readyState === "live")) reconnectMic();
+	});
+}
+// 인터넷이 다시 연결되면 기다리지 않고 바로 다시 듣는다
+window.addEventListener("online", () => {
+	if (state.playing && !state.paused && state.netDown) startRecognition();
+});
+window.addEventListener("offline", () => {
+	if (state.playing) {
+		state.netDown = true;
+		setStatus("⚠️ 인터넷 연결이 끊겼어요 — 연결되면 자동으로 이어서 들어요. (「다음 연」 버튼은 계속 쓸 수 있어요)");
+	}
+});
 // 링크를 열자마자 마이크 권한을 한 번 묻는다 (거절해도 게임 시작 때 다시 시도)
 ensureMicTrack().then(track => {
 	if (!state.playing && !track) $("notice").textContent = "🎤 마이크를 허용해 주세요 — 주소창 왼쪽 아이콘에서 바꿀 수 있어요";
