@@ -142,8 +142,16 @@ const PRACTICE_TEXT = [
 	"",
 	"오늘도 한 걸음씩 즐겁게 달려요.\n책 속에서 멋진 이야기를 만나요."
 ].join("\n");
+// 한글 파일 원본의 오타 교정 (2026-10-19 동동이 확인) — 내장 데이터·불러온 파일 모두 화면에 넣기 전에 적용한다
+const CORRECTIONS = [
+	["앨두알처럼 작고 귀여운", "앵두알처럼 작고 귀여운"],   // 밤이슬 — 없는 말 「앨두알」
+	["\n그 애 연습장\n", "\n그애 연습장\n"]               // 그애 연습장 — 제목·2행과 띄어쓰기 통일
+];
+function applyCorrections(text) {
+	return CORRECTIONS.reduce((t, [from, to]) => t.split(from).join(to), String(text || ""));
+}
 const DEFAULT_TEXT = typeof window.READING_RUN_POEMS === "string" && window.READING_RUN_POEMS.trim()
-	? window.READING_RUN_POEMS
+	? applyCorrections(window.READING_RUN_POEMS)
 	: PRACTICE_TEXT;
 const TITLE_LINE = /^[<〈《](.+)[>〉》]$/;
 
@@ -693,7 +701,7 @@ $("fileInput").addEventListener("change", async () => {
 	$("fileInput").value = "";
 	if (!file) return;
 	try {
-		const text = /\.hwpx$/i.test(file.name) ? await readHwpxText(file) : await file.text();
+		const text = applyCorrections(/\.hwpx$/i.test(file.name) ? await readHwpxText(file) : await file.text());
 		if (!parsePoems(text).length) throw new Error("읽을 글이 없어요");
 		$("passages").value = text;
 		rememberText();
