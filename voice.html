@@ -47,6 +47,8 @@ button.small { font-size: 16px; padding: 9px 16px; margin: 0; background: white;
 /* 굵게 하면 줄이 다시 나뉘어 글자 크기 맞춤이 틀어지므로 색만 바꾼다 */
 #text .done { background: #fff200; color: black; }
 #text .next { color: #2f7bf2; text-decoration: underline; text-decoration-thickness: 3px; }
+/* 끝까지 읽었는데 정확도가 모자랄 때 — 놓친 글자에 빨간 물결 밑줄 (밑줄은 글자 크기·줄바꿈에 영향 없음) */
+#text .miss { text-decoration: underline wavy #e02020; text-decoration-thickness: 3px; text-underline-offset: 6px; }
 #status { margin: 14px 0; font-size: 18px; color: #fff6ad; font-weight: bold; min-height: 26px; }
 #result { background: white; color: #2464c8; border-radius: 16px; padding: 26px; margin: 18px 0; font-size: 24px; font-weight: bold; line-height: 1.7; }
 footer { margin-top: 20px; font-weight: bold; }
@@ -165,6 +167,24 @@ const SHORT_MISS_ALLOWANCE = 8;
 // 끝에서 이 소리 수(약 마지막 한 단어) 안까지 맞았는데 이 시간 동안 새로 들리는 말이 없으면 다 읽은 것으로 본다
 const END_SETTLE_SOUNDS = 12;
 const END_SETTLE_MS = 2000;
+// 형광펜·% 표시 — 커서 근처(ANCHOR_WINDOW 자모 안)에서 ANCHOR_RUN 자모 이상 이어서 맞을 때만 전진한다.
+// (전체 정렬(LCS)로 자리를 잡으면 잡담의 자모가 우연히 걸려 색칠이 앞으로 튄다 — 10-19 재검증 피드백. 통과 판정은 LCS 에 이 커서 정렬을 함께 본다 — ANCHOR_GATE)
+const ANCHOR_RUN = 6;        // ≈ 3음절
+const ANCHOR_WINDOW = 24;    // ≈ 10글자
+const ANCHOR_END_RUN = 3;    // 연 끝에 닿는 묶음은 이만큼만 맞아도 인정 (마지막 짧은 낱말) — 단 커서 바로 뒤(ANCHOR_END_GAP 자모 안)일 때만
+const ANCHOR_END_GAP = 3;
+const ANCHOR_JUMP_RUN = 10;  // 가까이에 없으면 이만큼(≈ 5음절) 이어서 맞는 곳으로는 멀리도 건너뛴다 — 줄을 건너뛰었거나 인식이 한 구절을 통째로 빠뜨린 경우
+//                            연 첫머리(ANCHOR_WINDOW 안)와 이만큼 맞으면 처음부터 다시 읽는 것으로 보고 커서를 되돌린다
+const CUE_QUIET_MS = 2500;   // 끝 근처까지 읽었는데 통과 못 했을 때, 이 시간 동안 조용하면 놓친 곳 안내 (끝말 앞에서 잠깐 쉬는 아이를 리셋하지 않게)
+const CUE_MIN_CURSOR = 0.75;  // 짧은 연은 「끝에서 12소리」가 연의 절반도 안 되므로 커서가 연의 이 비율 이상일 때만 안내
+// 통과에는 전체 정렬 정확도와 함께 「순서대로 이어서 맞게 읽은 소리」가 연의 이 비율 이상이어야 한다.
+// (전체 정렬만 보면 절반만 읽고 잡담을 길게 해도 잡담 자모가 나머지 절반에 우연히 걸려 넘어간다 — 10-20 시뮬 21/103연. 0.6 = 그 21건 전부 차단, 정독·첫 단어 누락 통과 손실 0)
+const ANCHOR_GATE = 0.6;
+// 끝까지 읽었는데 통과 못 할 때 — 커서가 끝 근처(END_SETTLE_SOUNDS·CUE_MIN_CURSOR)이고 CUE_QUIET_MS 동안 조용하면 놓친 글자에 밑줄을 긋고 처음부터 다시 읽게 한다.
+// 커서가 못 따라갔는데 연보다 훨씬 많이 말했으면(전체 정렬로는 끝까지 + 말한 양 STUCK_HEARD_RATIO 배 이상 + 순서대로 맞은 소리 STUCK_MIN_READ 이상)
+// 진행은 그대로 두고 「다시 읽기」 버튼만 안내한다 — 읽다가 옆에서 잡담이 끼어든 경우에도 아이 진행이 날아가지 않게. 잡담만으로는 둘 다 안 뜬다
+const STUCK_MIN_READ = 0.4;
+const STUCK_HEARD_RATIO = 1.3;
 
 // 기본 글 — poems.js(한글 파일에서 변환한 시 목록)가 있으면 그것, 없으면 기능 확인용 연습 글
 const PRACTICE_TEXT = [
@@ -194,6 +214,8 @@ const state = {
 	playing: false, paused: false, totalSeconds: 900, threshold: 0.8,
 	totalChars: 0, autoCount: 0, manualCount: 0,
 	confirmed: "", interim: "", matched: 0, hits: 0, soundPos: 0, settleTimer: null,
+	cursor: 0, attemptHits: 0, shownHits: 0, attemptStart: 0, stuck: false, missed: null, cueTimer: null,
+	finalPos: 0, peakPos: 0, peakHits: 0,
 	recognition: null, generation: 0, micBlocked: false, micTrack: null, micRequest: null,
 	usesTrack: false, reconnectTimer: null, netDown: false,
 	resultsLen: 0, transition: false, lastResultAt: 0, hintShown: false
@@ -382,9 +404,13 @@ function toSounds(text) {
 // 들은 소리와 연의 소리를 순서대로 최대한 맞춘다(최장 공통 부분열).
 // 앞에서부터 욕심내서 맞추면 한 번 엇나간 뒤가 줄줄이 틀리므로, 전체를 보고 가장 많이 맞는 정렬을 찾는다.
 // hits = 맞은 소리 수, pos = 맞은 소리 중 연에서 가장 뒤에 있는 위치(어디까지 읽었는지)
+// 오래 떠든 말이 쌓여 우연히 맞는 것을 막으려고 최근에 들은 소리만 본다
+function recentSounds(target, heard) {
+	return heard.slice(-Math.ceil(target.length * HEARD_WINDOW + 10));
+}
+
 function matchProgress(target, heard) {
-	// 오래 떠든 말이 쌓여 우연히 맞는 것을 막으려고 최근에 들은 소리만 본다
-	const recent = heard.slice(-Math.ceil(target.length * HEARD_WINDOW + 10));
+	const recent = recentSounds(target, heard);
 	const n = target.length;
 	const m = recent.length;
 	let prev = new Array(m + 1).fill(0);
@@ -401,6 +427,111 @@ function matchProgress(target, heard) {
 	let pos = 0;
 	while (pos < n && rowMax[pos] < hits) pos++;
 	return { pos, hits };
+}
+
+// 형광펜 자리 — 들은 소리를 앞에서부터 훑으며, 커서 근처(ANCHOR_WINDOW)에서 ANCHOR_RUN 자모 이상 이어서 맞는 묶음이 있을 때만 커서를 옮긴다.
+// 전체 정렬(matchProgress)과 달리 한두 자모가 우연히 맞는 것으로는 움직이지 않는다. hits 는 통과 판정(ANCHOR_GATE)에도 쓴다.
+// pos = 커서(연의 소리 위치), hits = 묶음으로 맞은 소리 수
+function anchorProgress(target, heard) {
+	const n = target.length;
+	const m = heard.length;
+	// 「와!」처럼 소리가 몇 개 안 되는 연은 연 전체 길이만큼만 맞으면 된다 (안 그러면 영영 못 넘어간다 — 10-20 다른 시 검증)
+	const runNeed = Math.min(ANCHOR_RUN, n);
+	const endNeed = Math.min(ANCHOR_END_RUN, n);
+	let cursor = 0;
+	let hits = 0;
+	let j = 0;
+	// 커서가 연 끝에 닿아도 계속 본다 — 그 뒤에 처음부터 다시 읽는 것을 알아채야 하므로
+	while (j < m) {
+		let bestLen = 0;
+		let bestAt = cursor;
+		const end = Math.min(n, cursor + ANCHOR_WINDOW);
+		for (let t = cursor; t < end; t++) {
+			if (target[t] !== heard[j]) continue;
+			let k = 1;
+			while (t + k < n && j + k < m && target[t + k] === heard[j + k]) k++;
+			if (k > bestLen) { bestLen = k; bestAt = t; }
+		}
+		// 연 첫머리부터 다시 읽기 시작했는지 — 커서 앞쪽 첫머리에서 긴 묶음이 가까운 묶음보다 길게 맞으면 커서를 되돌린다
+		let restarted = false;
+		for (let t = 0; t < Math.min(cursor, ANCHOR_WINDOW); t++) {
+			if (target[t] !== heard[j]) continue;
+			let k = 1;
+			while (t + k < n && j + k < m && target[t + k] === heard[j + k]) k++;
+			if (k >= ANCHOR_JUMP_RUN && k > bestLen) { bestLen = k; bestAt = t; restarted = true; break; }
+		}
+		if (restarted) {
+			cursor = bestAt + bestLen;
+			hits = bestLen;
+			j += bestLen;
+			continue;
+		}
+		const endWord = bestLen >= endNeed && bestAt + bestLen === n && bestAt - cursor <= ANCHOR_END_GAP;
+		if (bestLen < runNeed && !endWord) {
+			// 가까이에 없으면 그 뒤에서 긴 묶음이 처음 나오는 곳을 찾는다 (가장 가까운 곳 — 후렴처럼 같은 줄이 되풀이돼도 덜 건너뛰게)
+			for (let t = end; t < n; t++) {
+				if (target[t] !== heard[j]) continue;
+				let k = 1;
+				while (t + k < n && j + k < m && target[t + k] === heard[j + k]) k++;
+				if (k >= ANCHOR_JUMP_RUN || (k >= runNeed && t + k === n)) { bestLen = k; bestAt = t; break; }
+			}
+		}
+		if (bestLen >= runNeed || endWord) {
+			cursor = bestAt + bestLen;
+			hits += bestLen;
+			j += bestLen;
+		} else {
+			j++;
+		}
+	}
+	return { pos: cursor, hits };
+}
+
+// 통과 판정과 같은 정렬(LCS)에서 연의 어느 소리가 안 맞았는지 되짚는다 — 놓친 글자 밑줄용 (연마다 안내가 뜰 때 1회만 계산)
+function lcsMatched(target, heard) {
+	const recent = recentSounds(target, heard);
+	const n = target.length;
+	const m = recent.length;
+	const width = m + 1;
+	const table = new Uint16Array((n + 1) * width);
+	for (let i = 1; i <= n; i++) {
+		for (let j = 1; j <= m; j++) {
+			table[i * width + j] = target[i - 1] === recent[j - 1]
+				? table[(i - 1) * width + j - 1] + 1
+				: Math.max(table[(i - 1) * width + j], table[i * width + j - 1]);
+		}
+	}
+	const matched = new Array(n).fill(false);
+	let i = n;
+	let j = m;
+	while (i > 0 && j > 0) {
+		if (target[i - 1] === recent[j - 1] && table[i * width + j] === table[(i - 1) * width + j - 1] + 1) {
+			matched[i - 1] = true;
+			i--;
+			j--;
+		} else if (table[(i - 1) * width + j] >= table[i * width + j - 1]) {
+			i--;
+		} else {
+			j--;
+		}
+	}
+	return matched;
+}
+
+// 소리의 절반 이상이 안 맞은 글자를 놓친 글자로 본다 (받침 하나 차이는 봐준다). chars = normalize 기준 글자 번호, spans = 이어진 묶음 수
+function missedChars(target, heard) {
+	const matched = lcsMatched(target.sounds, heard);
+	const count = new Map();
+	const miss = new Map();
+	target.owner.forEach((ch, i) => {
+		count.set(ch, (count.get(ch) || 0) + 1);
+		if (!matched[i]) miss.set(ch, (miss.get(ch) || 0) + 1);
+	});
+	const chars = new Set();
+	for (const [ch, missedCount] of miss) if (missedCount * 2 >= count.get(ch)) chars.add(ch);
+	let spans = 0;
+	for (const ch of chars) if (!chars.has(ch - 1)) spans++;
+	return { chars, spans };
 }
 
 function setStatus(message) {
@@ -425,7 +556,7 @@ function renderRunner() {
 }
 window.addEventListener("resize", renderRunner);
 
-// 읽은 글자까지 형광펜, 다음에 읽을 글자에 밑줄
+// 읽은 글자까지 형광펜, 다음에 읽을 글자에 밑줄, 놓친 곳 안내 중이면 놓친 글자에 빨간 물결 밑줄
 function renderParagraph() {
 	const box = $("text");
 	box.replaceChildren();
@@ -437,6 +568,7 @@ function renderParagraph() {
 		if (READABLE.test(ch)) {
 			if (pos < state.matched) span.className = "done";
 			else if (pos === state.matched) span.className = "next";
+			if (state.missed && state.missed.chars.has(pos)) span.classList.add("miss");
 			pos++;
 		} else if (pos > 0 && pos <= state.matched) {
 			span.className = "done";
@@ -449,36 +581,80 @@ function renderParagraph() {
 function updateMatch() {
 	const target = toSounds(currentParagraph());
 	const heard = toSounds(state.confirmed + " " + state.interim).sounds;
+	const heardFinal = toSounds(state.confirmed).sounds;
 	const total = target.sounds.length;
+	// ① 전체 정렬(LCS) — 받아쓰기 오차를 너그럽게 본다 (10-19 실음성 103연 검증본). 중간 결과가 바뀌어도 뒤로 가지 않게 최댓값 유지
 	const progress = matchProgress(target.sounds, heard);
-	// 중간 인식 결과가 바뀌어도 형광펜이 뒤로 가지 않게 최댓값만 유지
 	state.soundPos = Math.max(state.soundPos, progress.pos);
 	state.hits = Math.max(state.hits, progress.hits);
-	state.matched = state.soundPos > 0 ? target.owner[state.soundPos - 1] + 1 : 0;
-	renderParagraph();
-	const percent = Math.round(state.soundPos / total * 100);
-	setStatus("🎤 듣는 중 · " + percent + "% 읽었어요");
+	// ② 커서 정렬 — 형광펜·% 표시는 지금 시도, 통과 판정은 이 연에서 가장 잘 읽은 시도(shownHits)를 쓴다.
+	//    확정된 말로 얻은 자리는 중간 결과가 흔들려도 유지. 처음부터 다시 읽으면 커서가 되돌아간다.
+	//    (놓친 곳 안내가 뜬 뒤에는 그때부터 들은 말만 본다 — 처음부터 다시 읽는 진행이 0% 부터 보이게)
+	const shownFinal = anchorProgress(target.sounds, heardFinal.slice(state.attemptStart));
+	const shownLive = anchorProgress(target.sounds, heard.slice(state.attemptStart));
+	// 중간 결과가 짧게 고쳐져도 형광펜이 뒤로 가지 않게 이 시도의 최고 자리를 유지한다 — 확정된 말에서 커서가 줄었으면(처음부터 다시 읽기) 그때만 되돌린다
+	if (shownFinal.pos < state.finalPos) { state.peakPos = 0; state.peakHits = 0; }
+	state.finalPos = shownFinal.pos;
+	state.peakPos = Math.max(state.peakPos, shownFinal.pos, shownLive.pos);
+	state.peakHits = Math.max(state.peakHits, shownFinal.hits, shownLive.hits);
+	state.cursor = state.peakPos;
+	state.attemptHits = state.peakHits;
+	state.shownHits = Math.max(state.shownHits, state.attemptHits);
+	state.matched = state.cursor > 0 ? target.owner[state.cursor - 1] + 1 : 0;
 	// 맞은 소리 비율이 기준 이상이거나, 짧은 연이라 놓친 소리가 몇 개뿐이면 정확한 것으로 본다
 	const misses = total - state.hits;
 	// (아주 짧은 연 — 「바스락!」 같은 한 단어 — 은 이 여유를 주지 않는다. 잡담에 섞인 소리로 넘어가는 것 방지)
-	const accurate = state.hits / total >= state.threshold || (total >= 20 && misses <= SHORT_MISS_ALLOWANCE && state.hits >= total * 0.6);
+	// 단 순서대로 이어서 맞은 소리도 ANCHOR_GATE 이상이어야 한다(절반 읽고 잡담해서 넘어가는 것 차단),
+	// 또는 순서대로 이어서 맞은 소리만으로 기준을 넘으면 통과 (읽다가 잡담이 끼어 전체 정렬의 최근 범위에서 앞부분이 밀려난 경우)
+	const accurate = ((state.hits / total >= state.threshold || (total >= 20 && misses <= SHORT_MISS_ALLOWANCE && state.hits >= total * 0.6)) &&
+		state.shownHits >= total * ANCHOR_GATE) || state.shownHits >= total * state.threshold;
 	// 끝까지 왔거나(마지막 3소리 이내), 끝말이 잘못 들려도 연만큼 말했으면 다 읽은 것으로 본다
 	const reachedEnd = state.soundPos >= total - 3 || heard.length >= total;
+	renderParagraph();
+	const percent = Math.round(state.attemptHits / total * 100);
+	const lost = !state.stuck && !accurate && !state.interim && state.soundPos >= total - 3 && heard.length >= total * STUCK_HEARD_RATIO && state.shownHits >= total * STUCK_MIN_READ;
+	if (state.stuck) showCue(percent);
+	else if (lost) setStatus("🔁 " + percent + "% 맞게 들렸어요 — 이어서 읽거나, 「↩️ 이 연 다시 읽기」를 누르고 처음부터 읽어 주세요");
+	else setStatus("🎤 듣는 중 · " + percent + "% 맞게 읽었어요");
 	clearTimeout(state.settleTimer);
+	clearTimeout(state.cueTimer);
+	const turn = state.turn;
 	if (accurate && reachedEnd) {
 		finishReading();
 	} else if (accurate && state.soundPos >= total - END_SETTLE_SOUNDS) {
 		// 음성인식이 마지막 한 단어를 못 받아 적는 경우 — 거의 끝까지 맞았고 잠깐 조용하면 다 읽은 것으로 본다
-		const turn = state.turn;
 		state.settleTimer = setTimeout(() => {
 			if (state.playing && !state.paused && state.turn === turn) finishReading();
 		}, END_SETTLE_MS);
+	} else if (!accurate && !state.stuck && !state.interim && state.cursor >= total - END_SETTLE_SOUNDS && state.cursor >= total * CUE_MIN_CURSOR) {
+		// ③ 끝 근처까지 읽었는데 정확도가 모자라고 잠깐 조용하면 — 놓친 글자에 빨간 밑줄을 긋고 처음부터 다시 읽게 안내한다
+		//    (한 번 뜨면 이 연을 통과할 때까지 유지)
+		state.cueTimer = setTimeout(() => {
+			if (!state.playing || state.paused || state.turn !== turn || state.stuck) return;
+			state.stuck = true;
+			state.missed = missedChars(target, toSounds(state.confirmed + " " + state.interim).sounds);
+			state.attemptStart = toSounds(state.confirmed).sounds.length;
+			state.cursor = state.finalPos = state.peakPos = state.peakHits = 0;
+			state.attemptHits = 0;
+			state.shownHits = 0;
+			state.matched = 0;
+			renderParagraph();
+			showCue(0);
+		}, CUE_QUIET_MS);
 	}
+}
+
+function showCue(percent) {
+	if (state.missed.spans > 0) setStatus("🔁 빨간 밑줄 " + state.missed.spans + "군데를 놓쳤어요 — 처음부터 다시 또박또박 읽어 주세요 (" + percent + "%)");
+	else setStatus("🔁 조금 다르게 들렸어요 — 처음부터 다시 또박또박 읽어 주세요 (" + percent + "%)");
 }
 
 function finishReading() {
 	const turn = state.turn;
 	clearTimeout(state.settleTimer);
+	clearTimeout(state.cueTimer);
+	state.stuck = false;
+	state.missed = null;
 	state.matched = normalize(currentParagraph()).length;
 	renderParagraph();
 	$("notice").textContent = "👏 잘했어요! 다음 학생 준비!";
@@ -527,7 +703,7 @@ function startRecognition() {
 	const live = () => state.recognition === recognition && state.generation === generation && state.playing;
 
 	recognition.onstart = () => {
-		if (live() && !state.netDown) setStatus("🎤 듣고 있어요! 또박또박 읽어 주세요.");
+		if (live() && !state.netDown && !state.stuck) setStatus("🎤 듣고 있어요! 또박또박 읽어 주세요.");
 	};
 	recognition.onresult = event => {
 		if (!live()) return;
@@ -700,6 +876,15 @@ function startParagraph() {
 	state.matched = 0;
 	state.hits = 0;
 	state.soundPos = 0;
+	state.cursor = 0;
+	state.finalPos = 0;
+	state.peakPos = 0;
+	state.peakHits = 0;
+	state.attemptHits = 0;
+	state.shownHits = 0;
+	state.attemptStart = 0;
+	state.stuck = false;
+	state.missed = null;
 	$("notice").textContent = "📢 " + state.student + "번 주자 낭독 차례!";
 	const turn = currentTurn();
 	$("paraInfo").textContent = "📖 " + (turn.title || "읽을 글") + " · " + turn.stanza + "연 / " + turn.stanzaCount + "연" +
