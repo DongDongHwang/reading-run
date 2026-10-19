@@ -36,7 +36,7 @@ const consts = ["READABLE", "HEARD_WINDOW", "SHORT_MISS_ALLOWANCE", "END_SETTLE_
 	"ANCHOR_RUN", "ANCHOR_WINDOW", "ANCHOR_END_RUN", "ANCHOR_END_GAP", "ANCHOR_JUMP_RUN", "ANCHOR_GATE", "CUE_QUIET_MS", "CUE_MIN_CURSOR", "STUCK_MIN_READ", "STUCK_HEARD_RATIO",
 	"CORRECTIONS", "TITLE_LINE", "CHO", "JUNG", "JONG", "SOUND", "JONG_SOUND"].map(grabConst).join("\n");
 const funcs = ["applyCorrections", "normalize", "parsePoems", "toSounds", "recentSounds", "matchProgress",
-	"anchorProgress", "lcsMatched", "missedChars", "updateMatch", "showCue"].map(grabFunction).join("\n");
+	"anchorProgress", "lcsMatched", "missedChars", "lastLineStart", "updateMatch", "showCue"].map(grabFunction).join("\n");
 const hasAnchor = funcs.includes("function anchorProgress(");
 
 // updateMatch 가 부르는 바깥 것들은 가짜로 — DOM 대신 기록만 한다. 타이머는 실제처럼 걸어 두고, 「조용한 시간」이 오면 실행한다

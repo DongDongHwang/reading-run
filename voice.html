@@ -549,6 +549,15 @@ function missedChars(target, heard) {
 	return { chars, spans };
 }
 
+// 연의 마지막 줄이 시작하는 소리 위치 (줄이 하나뿐인 연은 0)
+function lastLineStart(text, target) {
+	const lines = String(text).split("\n").filter(l => normalize(l).length > 0);
+	if (lines.length < 2) return 0;
+	const chars = normalize(text).length - normalize(lines[lines.length - 1]).length;
+	const at = target.owner.findIndex(ch => ch >= chars);
+	return at < 0 ? target.sounds.length : at;
+}
+
 function setStatus(message) {
 	$("status").textContent = message;
 }
@@ -624,19 +633,24 @@ function updateMatch() {
 	const accurate = ((state.hits / total >= state.threshold || (total >= 20 && misses <= SHORT_MISS_ALLOWANCE && state.hits >= total * 0.6)) &&
 		state.shownHits >= total * ANCHOR_GATE) || state.shownHits >= total * state.threshold;
 	// 끝까지 왔거나(마지막 3소리 이내), 끝말이 잘못 들려도 연만큼 말했으면 다 읽은 것으로 본다
-	const reachedEnd = state.soundPos >= total - 3 || heard.length >= total;
+	// 단 순서대로 따라온 커서(형광펜)가 마지막 줄 안으로 들어가 있어야 한다 — 이게 없으면 마지막 줄을 통째로 건너뛰고
+	// 군말·앞줄 다시 읽기만 섞어도 넘어간다 (10-20 동동이 실사용 「2번째 줄인데 3번째 줄까지 칠해지고 넘어감」, 시뮬 102연 중 35~49연 · 실음성 재현).
+	// 커서만으로 끝을 보면 Google 이 끝말을 합쳐 받아 적을 때(「간질여 주어라」→「간지러워라」) 못 넘어가므로 끝 판단 자체는 그대로 둔다 (10-20 실음성)
+	const inLastLine = state.cursor > lastLineStart(currentParagraph(), target);
+	const reachedEnd = (state.soundPos >= total - 3 || heard.length >= total) && inLastLine;
 	renderParagraph();
 	const percent = Math.round(state.attemptHits / total * 100);
 	const lost = !state.stuck && !accurate && !state.interim && state.soundPos >= total - 3 && heard.length >= total * STUCK_HEARD_RATIO && state.shownHits >= total * STUCK_MIN_READ;
 	if (state.stuck) showCue(percent);
 	else if (lost) setStatus("🔁 " + percent + "% 맞게 들렸어요 — 이어서 읽거나, 「↩️ 이 연 다시 읽기」를 누르고 처음부터 읽어 주세요");
+	else if (accurate && !inLastLine) setStatus("👉 " + percent + "% 맞게 읽었어요 — 마지막 줄까지 읽어 주세요");
 	else setStatus("🎤 듣는 중 · " + percent + "% 맞게 읽었어요");
 	clearTimeout(state.settleTimer);
 	clearTimeout(state.cueTimer);
 	const turn = state.turn;
 	if (accurate && reachedEnd) {
 		finishReading();
-	} else if (accurate && state.soundPos >= total - END_SETTLE_SOUNDS) {
+	} else if (accurate && state.soundPos >= total - END_SETTLE_SOUNDS && inLastLine) {
 		// 음성인식이 마지막 한 단어를 못 받아 적는 경우 — 거의 끝까지 맞았고 잠깐 조용하면 다 읽은 것으로 본다
 		state.settleTimer = setTimeout(() => {
 			if (state.playing && !state.paused && state.turn === turn) finishReading();
