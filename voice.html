@@ -83,7 +83,8 @@ body.playing .track:after { top: 6px; font-size: 30px; }
 body.playing #runners { top: 6px; font-size: 32px; }
 body.playing #micMeter { order: 3; margin: 6px 0 0; font-size: 14px; }
 body.playing #reading { order: 4; }
-body.playing #paraInfo { margin: 6px 0; font-size: 17px; }
+/* 시 제목·몇 연째 = 게임 중 주 정보 — 화면 폭 따라 24~34px (17px 은 프로젝터에서 너무 작았다, 10-20 동동이). 이보다 키우면 1024 에서 범례가 다음 줄로 밀린다 */
+body.playing #paraInfo { margin: 6px 0; font-size: clamp(24px, 2.2vw, 34px); }
 body.playing #readHead { margin: 6px 0; }
 body.playing #text { padding: 14px 20px; line-height: 1.55; min-height: 0; column-gap: 48px; column-rule: 2px dashed #d0d7e2; }
 body.playing #status { margin: 6px 0; font-size: 16px; min-height: 44px; }
