@@ -161,7 +161,7 @@ const state = {
 	playing: false, paused: false, totalSeconds: 900, threshold: 0.8,
 	totalChars: 0, autoCount: 0, manualCount: 0,
 	confirmed: "", interim: "", matched: 0, hits: 0, soundPos: 0, settleTimer: null,
-	recognition: null, generation: 0, micBlocked: false
+	recognition: null, generation: 0, micBlocked: false, micTrack: null, micRequest: null
 };
 
 function normalize(text) {
@@ -230,8 +230,8 @@ function refreshPoemSelect() {
 		option.textContent = label;
 		select.appendChild(option);
 	};
-	add("shuffle", "📚 전체 — 섞어서");
 	add("all", "📚 전체 — 순서대로");
+	add("shuffle", "🔀 전체 — 섞어서");
 	add("random", "🎲 무작위 1편");
 	poems.forEach((poem, i) => add(String(i), (i + 1) + ". " + (poem.title || "제목 없음") + " (" + poem.stanzas.length + "연)"));
 	if ([...select.options].some(o => o.value === previous)) select.value = previous;
@@ -522,11 +522,30 @@ function startRecognition() {
 		setTimeout(() => { if (live()) startRecognition(); }, 100);
 	};
 	try {
-		recognition.start();
+		// 게임 시작 때 연 마이크를 넘겨 준다 → 연이 바뀌거나 인식이 다시 켜져도 마이크 권한·알림이 다시 뜨지 않는다
+		// (마이크 트랙을 못 받은 경우엔 예전처럼 브라우저가 직접 마이크를 연다)
+		if (state.micTrack && state.micTrack.readyState === "live") recognition.start(state.micTrack);
+		else recognition.start();
 	} catch (e) {
 		setStatus("⚠️ 마이크를 켜지 못했어요. 「🎤 마이크 다시 켜기」를 눌러 주세요.");
 		$("mic").hidden = false;
 	}
+}
+
+// 페이지를 열 때 한 번만 마이크를 열고, 페이지를 닫을 때까지 계속 쓴다 (게임을 여러 판 해도 다시 묻지 않는다)
+async function ensureMicTrack() {
+	if (state.micTrack && state.micTrack.readyState === "live") return state.micTrack;
+	if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return null;
+	// 권한 창이 떠 있는 동안 또 부르면 같은 요청을 기다린다 (권한 창이 두 번 뜨지 않게)
+	if (!state.micRequest) {
+		state.micRequest = navigator.mediaDevices
+			.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+			.then(stream => { state.micTrack = stream.getAudioTracks()[0] || null; })
+			.catch(() => { state.micTrack = null; })
+			.finally(() => { state.micRequest = null; });
+	}
+	await state.micRequest;
+	return state.micTrack;
 }
 
 function startParagraph() {
@@ -583,7 +602,7 @@ function finishGame(allDone) {
 	$("result").hidden = false;
 }
 
-function startGame() {
+async function startGame() {
 	const text = $("passages").value;
 	const poems = parsePoems(text);
 	if (!poems.length) {
@@ -612,6 +631,12 @@ function startGame() {
 	$("pause").textContent = "⏸ 일시정지";
 	$("track").classList.add("running");
 	renderTimer();
+	$("reading").hidden = true;
+	$("notice").textContent = "🎤 마이크 준비 중 — 권한 창이 보이면 「허용」을 눌러 주세요";
+	await ensureMicTrack();
+	// 마이크 준비 중에 새 게임을 눌렀으면 시작하지 않는다
+	if (!state.playing) return;
+	$("reading").hidden = false;
 	startTimer();
 	startParagraph();
 }
@@ -666,9 +691,10 @@ $("start").addEventListener("click", startGame);
 $("next").addEventListener("click", () => { if (!state.paused) completeParagraph(true); });
 $("retry").addEventListener("click", () => { if (state.playing && !state.paused) startParagraph(); });
 $("pause").addEventListener("click", togglePause);
-$("mic").addEventListener("click", () => {
+$("mic").addEventListener("click", async () => {
 	state.micBlocked = false;
 	$("mic").hidden = true;
+	await ensureMicTrack();
 	startRecognition();
 });
 $("reset").addEventListener("click", () => {
@@ -715,6 +741,10 @@ $("fileInput").addEventListener("change", async () => {
 $("passages").value = loadText() || DEFAULT_TEXT;
 refreshPoemSelect();
 renderTimer();
+// 링크를 열자마자 마이크 권한을 한 번 묻는다 (거절해도 게임 시작 때 다시 시도)
+ensureMicTrack().then(track => {
+	if (!state.playing && !track) $("notice").textContent = "🎤 마이크를 허용해 주세요 — 주소창 왼쪽 아이콘에서 바꿀 수 있어요";
+});
 </script>
 </body>
 </html>
